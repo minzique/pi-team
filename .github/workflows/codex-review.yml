@@ -1,0 +1,81 @@
+name: Codex PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# NOTE: This workflow is an ALTERNATIVE to Codex Cloud's built-in PR review
+# (enabled by connecting your GitHub org to ChatGPT at
+#  https://chatgpt.com/codex/settings/integrations — recommended because it
+#  uses your ChatGPT subscription instead of API credits).
+#
+# Use this workflow ONLY if:
+#   - You prefer a custom prompt / style over the default Codex Cloud review
+#   - OR you're on an OpenAI API-billed account and want programmatic control
+#
+# Requires OPENAI_API_KEY repo secret (API billing). If you'd rather burn
+# subscription quota, use Codex Cloud instead and delete this file.
+
+jobs:
+  codex:
+    if: |
+      github.event.pull_request.draft == false &&
+      vars.PITEAM_CODEX_REVIEW == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+
+      - name: Pre-fetch base + head refs
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin "$PR_BASE_REF" "+refs/pull/$PR_NUMBER/head"
+
+      - name: Run Codex
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-5.4
+          effort: high
+          sandbox: read-only
+          prompt: |
+            You are reviewing pull request #${{ github.event.pull_request.number }}
+            in ${{ github.repository }} — a multi-agent orchestration harness
+            built on pi RPC mode.
+
+            The diff is between origin/${{ github.event.pull_request.base.ref }}
+            and the PR head. Read the code around each change, not just the diff.
+
+            Focus on correctness, subprocess / IPC / event-loop lifecycle hazards,
+            architecture fit with the existing patterns (strict TypeScript, no any,
+            small modules, explicit cleanup), concurrency in the orchestrator loop,
+            and the plan-aware usage tracking math in src/usage/**.
+
+            Be specific: file + line + concrete fix. No fluff. Don't suggest "add
+            tests" unless the omission actively hides bugs.
+
+            End with a one-line verdict: LGTM / LGTM with nits / needs changes.
+
+      - name: Post review as PR comment
+        if: always() && steps.run_codex.outputs.final-message != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const msg = `## 🤖 Codex review\n\n${{ steps.run_codex.outputs.final-message }}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: msg,
+            });

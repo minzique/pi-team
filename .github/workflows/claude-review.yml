@@ -1,0 +1,74 @@
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  claude:
+    # Skip draft PRs; allow manual @claude mentions on draft via comment event
+    if: |
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          # Subscription auth via long-lived OAuth token.
+          # Set via:
+          #   claude setup-token
+          #   gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo minzique/pi-team --body "<token>"
+          # Falls back to ANTHROPIC_API_KEY if the OAuth token isn't set (API billing).
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          trigger_phrase: "@claude"
+          # On PR open/update, auto-run a focused review (no mention needed).
+          # On comments/mentions, the action auto-detects @claude and runs.
+          prompt: |
+            You are reviewing a pull request on `minzique/pi-team`, a multi-agent
+            orchestration harness built on pi RPC mode. Read the diff and the
+            existing code around it carefully. Think like an outside reviewer
+            who was not part of writing this code.
+
+            Focus on:
+            - Correctness. Does the code do what the commit message says? Edge
+              cases, error handling, race conditions in the orchestrator loop,
+              subprocess lifecycle.
+            - Architecture fit. Does it match the existing patterns in this repo
+              (strict TypeScript, no any, no @ts-ignore, small modules, explicit
+              cleanup)? Does it introduce a new pattern without reason?
+            - Concurrency and IPC. pi-team spawns pi subprocesses and talks to
+              them via JSONL. Be paranoid about stdin/stdout handling, unclosed
+              handles keeping the event loop alive, missed shutdowns, socket
+              cleanup.
+            - Security. User injection over Unix socket / HTTP — any new path
+              that lets unauthenticated input reach an agent's context?
+            - Plan-aware usage tracking (src/usage/**). The cost/limit numbers
+              matter — flag anything that could show wrong percentages or
+              leak the actual API cost as authoritative for subscription users.
+            - TypeScript strictness. No silent `any`, no type assertions hiding
+              real issues.
+
+            When you find something, be specific: file + line + concrete fix.
+            When the code is fine, say so and move on. Do not pad with
+            "consider adding tests" unless the omission is genuinely load-bearing.
+
+            End with a verdict line: "LGTM", "LGTM with nits", or "needs changes".

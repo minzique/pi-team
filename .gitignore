@@ -11,3 +11,4 @@ bin/*.js.map
 sessions/
 *.sock
 *.pid
+.venv-auth/
