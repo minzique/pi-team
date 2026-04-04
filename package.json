@@ -1,5 +1,5 @@
 {
-  "name": "@minzique/pi-team",
+  "name": "@minzicat/pi-team",
   "version": "0.1.0",
   "description": "Multi-agent debate/collaboration harness built on pi RPC mode. Spawn agents with different models in one conversation, observe via tmux, inject as a human.",
   "type": "module",

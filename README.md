@@ -7,9 +7,9 @@ Built on [pi](https://github.com/badlogic/pi-mono) RPC mode. Each agent is a rea
 ## Install
 
 ```bash
-pnpm add -g @minzique/pi-team
+pnpm add -g @minzicat/pi-team
 # or
-npm i -g @minzique/pi-team
+npm i -g @minzicat/pi-team
 ```
 
 Requires: Node 20+, `pi` on PATH, `tmux` 3.2+.
