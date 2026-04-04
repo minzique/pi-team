@@ -1,224 +1,93 @@
 # pi-team
 
-Multi-agent debate/collaboration harness built on top of [pi](https://github.com/badlogic/pi-mono) RPC mode. Spawn N agents, each with its own model, have them talk to each other in a shared transcript, and hop in live with human injections.
+Two or more LLMs in the same conversation. You can watch, and you can hop in.
 
-Think "pi session, but with two or more LLMs in the room, and you can type in whenever you want."
-
-## What it does
-
-- **Spawns pi agents as RPC subprocesses.** Each agent is a real `pi --mode rpc` instance with its own session file, model, thinking level, and tools. You get pi's full capability stack (web search, code execution, skills, extensions) per agent, for free.
-- **Routes messages through a shared transcript.** Round-robin turn-taking by default; each agent sees everything said since its last turn, attributed by name (`[claude]: ...`, `[codex]: ...`, `[human]: ...`).
-- **Live observation via tmux.** `pi-team start` creates a 3-pane tmux session: orchestrator stream, inject prompt, log tail. Attach from any terminal, detach, reattach, share.
-- **Human injection.** Type into the inject pane, or `curl -X POST /inject` from anywhere. Injections land at the next turn boundary, visible to every agent.
-- **Containerized.** `docker compose up` gives you a hosted debate with a web UI (ttyd) and an HTTP inject endpoint. Drop it into ops-agent, webhooks, any tool that speaks HTTP.
+Built on [pi](https://github.com/badlogic/pi-mono) RPC mode. Each agent is a real pi subprocess with its own model, tools, and session — the orchestrator just routes messages between them.
 
 ## Install
 
 ```bash
-pnpm install
-pnpm build
-
-# Link locally
-npm link
-# or use directly:
-node bin/pi-team.js help
+pnpm add -g @minzique/pi-team
+# or
+npm i -g @minzique/pi-team
 ```
 
-Requirements:
-- Node 20+
-- `pi` on PATH (`npm install -g @mariozechner/pi-coding-agent`)
-- `tmux` 3.2+ (for `start` mode)
-- API keys for whichever providers you use
+Requires: Node 20+, `pi` on PATH, `tmux` 3.2+.
 
-## Usage
-
-### Quickstart: two agents debating, observable in tmux
+## Use
 
 ```bash
 pi-team start \
   --name emotions \
   --agent claude:anthropic/claude-sonnet-4-5 \
   --agent codex:openai-codex/gpt-5.4:xhigh \
-  --max-turns 10 \
-  --topic-file ./debate-prompt.md
-```
+  --topic-file debate.md \
+  --max-turns 10
 
-This prints:
-
-```
-pi-team session "emotions" started in tmux.
-
-  Watch:   tmux attach -t piteam-emotions
-  Inject:  pi-team inject --name emotions
-  Stop:    pi-team stop --name emotions
-  Log:     /Users/you/.pi/team/sessions/emotions/events.log
-  Dir:     /Users/you/.pi/team/sessions/emotions
-```
-
-Attach to watch live:
-
-```bash
 tmux attach -t piteam-emotions
 ```
 
-You'll see three panes:
-- **Top (big):** orchestrator stream — every agent's tokens stream live, colored by agent name.
-- **Bottom-left:** injection prompt. Type a message and press Enter; it gets delivered to both agents at the next turn.
-- **Bottom-right:** raw log tail.
+Three panes: stream, inject, log tail. Type in the inject pane to hop in — all agents see it at the next turn boundary. Detach with `Ctrl+b d`.
 
-Detach with `Ctrl+b d`. Stop the session with `pi-team stop --name emotions`.
+Agent spec: `name:provider/model[:thinking]`. The name is used as attribution and persona (`skeptic:anthropic/...`, `optimist:openai-codex/...`).
 
-### Foreground mode (no tmux)
+## Commands
 
-```bash
-pi-team run \
-  --name test \
-  --agent a:anthropic/claude-haiku-4-5 \
-  --agent b:openai-codex/gpt-5.4-mini \
-  --topic "Pick a side on X and debate briefly." \
-  --max-turns 6
-```
+| | |
+|---|---|
+| `pi-team start`  | launch session in tmux (observable + injectable) |
+| `pi-team run`    | foreground, no tmux |
+| `pi-team inject` | interactive stdin → running session |
+| `pi-team stop`   | kill session |
+| `pi-team list`   | active and archived sessions |
 
-Everything streams to stdout. Use `pi-team inject --name test` from another shell to hop in.
-
-### Agent spec format
-
-```
-name:provider/model[:thinking]
-```
-
-Examples:
-- `claude:anthropic/claude-sonnet-4-5`
-- `codex:openai-codex/gpt-5.4:xhigh`
-- `haiku:anthropic/claude-haiku-4-5`
-- `gem:google/gemini-3-pro-preview:high`
-- `mini:openai-codex/gpt-5.4-mini`
-
-`name` is arbitrary; it's used as the attribution prefix in the transcript. Use it to give agents personas: `skeptic:anthropic/claude-sonnet-4-5`, `optimist:openai-codex/gpt-5.4:xhigh`.
-
-### Commands
-
-```
-pi-team start    --name N --agent SPEC --agent SPEC [--topic T | --topic-file F] [--max-turns N]
-pi-team run      (same flags, foreground, no tmux)
-pi-team inject   --name N              (interactive stdin → session socket)
-pi-team stop     --name N              (kill tmux session)
-pi-team list                           (sessions on disk, ● = active)
-pi-team help
-```
-
-Flags:
-- `--max-turns N` — stop after N agent turns (default 20)
-- `--turn-delay-ms N` — pause between turns (rate limiting)
-- `--sessions-dir <dir>` — override `~/.pi/team/sessions`
-- `--http-port N` — enable HTTP inject endpoint on this port (or `PITEAM_HTTP_PORT` env)
-
-### Injection from anywhere
-
-Three equivalent ways to inject a human message into a running session:
-
-1. **Tmux inject pane.** Just type in the bottom-left pane.
-2. **`pi-team inject --name N`** from any shell. Interactive readline prompt.
-3. **Unix socket directly.** `echo "your message" | nc -U ~/.pi/team/sessions/N/inject.sock`
-4. **HTTP (when `--http-port` is set).**
-   ```bash
-   curl -X POST http://localhost:7682/inject -d "Push back on the steering manifold argument."
-   ```
-
-All four deliver the same way: the injection lands in the transcript at the next turn boundary, and every subsequent agent sees it.
-
-## Containerized deployment
-
-For hosting (ops-agent integration, shared team sessions, hosted debates):
+## Inject from anywhere
 
 ```bash
-cd pi-team
-cp .env.example .env  # add your API keys
-echo "your debate topic here" > topics/topic.md
+# interactive
+pi-team inject --name emotions
 
+# unix socket
+echo "your message" | nc -U ~/.pi/team/sessions/emotions/inject.sock
+
+# HTTP (when --http-port is set)
+curl -X POST http://localhost:7682/inject -d "push back on that last point"
+```
+
+All three land the same way: queued, delivered at the next turn boundary, visible to every agent.
+
+## Container
+
+```bash
 docker compose up --build
 ```
 
-Then:
+- `:7681` — ttyd web terminal on the tmux session
+- `:7682` — HTTP API (`POST /inject`, `GET /state`, `GET /transcript`, `POST /stop`)
+- `/data` — persistent session storage
 
-- **Watch the debate** at <http://localhost:7681/> (web-based tmux via ttyd)
-- **Inject messages** via `curl -X POST http://localhost:7682/inject -d 'your message'`
-- **Get state**: `curl http://localhost:7682/state`
-- **Fetch transcript**: `curl http://localhost:7682/transcript`
+Env: `PITEAM_NAME`, `PITEAM_AGENTS` (comma-separated specs), `PITEAM_TOPIC_FILE` or `PITEAM_TOPIC`, `PITEAM_MAX_TURNS`, `PITEAM_TTYD_CREDS` (basic auth), `PITEAM_HTTP_TOKEN` (bearer).
 
-Env vars (see `docker-compose.yml`):
-
-| Var                  | Description                                     |
-|----------------------|-------------------------------------------------|
-| `PITEAM_NAME`        | Session name                                    |
-| `PITEAM_AGENTS`      | Comma-separated agent specs                     |
-| `PITEAM_TOPIC_FILE`  | Path to topic file inside container             |
-| `PITEAM_TOPIC`       | Or inline topic string                          |
-| `PITEAM_MAX_TURNS`   | Max agent turns                                 |
-| `PITEAM_TTYD_CREDS`  | `user:password` for ttyd basic auth (hosted)    |
-| `PITEAM_HTTP_TOKEN`  | Bearer token required for HTTP inject           |
-| `ANTHROPIC_API_KEY`  | (or whichever providers you're using)           |
-
-The container exposes:
-- **7681**: ttyd web terminal showing the tmux session
-- **7682**: HTTP API for inject/state/transcript/stop
-- **Volume `/data`**: persistent session storage
-
-## Architecture
+## How it works
 
 ```
-┌──────────────────────────────────────────────┐
-│              Orchestra                       │
-│  ┌────────────┐      ┌───────────────┐       │
-│  │ Transcript │◄─────┤ runLoop()     │       │
-│  │ (jsonl)    │      │  round-robin  │       │
-│  └────────────┘      └───┬───────────┘       │
-│                          │                   │
-│           ┌──────────────┼──────────────┐    │
-│           ▼              ▼              ▼    │
-│      ┌────────┐     ┌────────┐     ┌────────┐│
-│      │Agent A │     │Agent B │ ... │Agent N ││
-│      │pi RPC  │     │pi RPC  │     │pi RPC  ││
-│      └────────┘     └────────┘     └────────┘│
-│                          ▲                   │
-│                          │ events             │
-│                    ┌─────┴──────┐             │
-│                    │  Observer  │─► stdout    │
-│                    │            │─► log file  │
-│                    └────────────┘             │
-│                                               │
-│  InjectServer (Unix socket)                   │
-│  HttpInject (optional :7682)                  │
-└───────────────────────────────────────────────┘
+┌─ Orchestra ─────────────────────────────┐
+│  Transcript (jsonl, single source)      │
+│      │                                  │
+│      ├─► Agent A  (pi --mode rpc)       │
+│      ├─► Agent B  (pi --mode rpc)       │
+│      └─► Agent N  ...                   │
+│      ▲                                  │
+│      │                                  │
+│      ├─ Unix socket ─┐                  │
+│      ├─ HTTP POST ───┼── human inject   │
+│      └─ tmux pane ───┘                  │
+└─────────────────────────────────────────┘
 ```
 
-- Each **Agent** is a `pi --mode rpc` subprocess. The orchestrator sends it `prompt` commands and streams back text deltas + tool calls.
-- The **Transcript** is the single source of truth. Every message (human, agent, system) gets a monotonic seq and is appended to a JSONL file.
-- The **Orchestra** runs a round-robin loop: for each turn, render the messages since that agent's last turn, send as a `prompt`, wait for `agent_end`, append the response to the transcript, repeat.
-- **Human injections** are drained into the transcript at turn boundaries, so every subsequent agent naturally sees them as messages from `[human]`.
-- **Observer** is a read-only event consumer that renders to stdout/log. Multiple observers can attach.
+Round-robin by default. Each agent's pi session holds its own side; the orchestrator renders everything-since-last-turn with attribution (`[claude]: ...`, `[human]: ...`) as the next prompt. Injections drain at turn boundaries.
 
-Each agent has **its own pi session file** (`agent-<name>.session.jsonl`), so every agent has pi's full memory of its side of the conversation, plus all the tools, skills, and extensions it would have in a normal pi session.
-
-## Why build this on pi?
-
-pi's RPC mode gives us:
-- A full agent runtime per subprocess (tools, extensions, skills, thinking levels, session persistence)
-- A clean JSONL event stream with turn boundaries, tool execution events, and text deltas
-- Easy model switching per agent without touching orchestration code
-- Session files that are human-readable and replayable
-
-The orchestrator is ~300 lines of TypeScript because pi does the hard work.
-
-## Roadmap
-
-- [ ] Free-for-all mode (all agents respond in parallel per turn)
-- [ ] Moderator mode (a third agent decides who speaks next)
-- [ ] Resume from existing transcript
-- [ ] Export to HTML / Markdown transcript
-- [ ] Slack/Discord bridges
-- [ ] Streaming HTTP SSE endpoint
-- [ ] Pi extension wrapper (`/team` command inside a pi session)
+Every agent gets pi's full stack: tools, skills, extensions, thinking levels. The orchestrator is ~400 lines of TypeScript because pi does the hard work.
 
 ## License
 
