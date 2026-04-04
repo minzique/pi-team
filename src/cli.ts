@@ -201,10 +201,15 @@ async function cmdRun(flags: Map<string, string[]>): Promise<void> {
 		process.stderr.write(`\n\x1b[31mfatal:\x1b[0m ${(err as Error).message}\n`);
 		injectServer.stop();
 		httpHandle?.stop();
+		await orchestra.stop();
 		process.exit(1);
 	}
+	// Natural completion (max turns reached, etc.) — tear everything down
+	// or the pi child processes keep the event loop alive forever.
 	injectServer.stop();
 	httpHandle?.stop();
+	await orchestra.stop();
+	process.exit(0);
 }
 
 async function cmdStart(flags: Map<string, string[]>): Promise<void> {
