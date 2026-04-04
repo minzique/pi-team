@@ -1,0 +1,44 @@
+{
+  "name": "@minzique/pi-team",
+  "version": "0.1.0",
+  "description": "Multi-agent debate/collaboration harness built on top of pi RPC mode. Spawn multiple pi agents with different models, route messages between them, observe live via tmux, and hop in with human injections.",
+  "type": "module",
+  "bin": {
+    "pi-team": "./bin/pi-team.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node bin/pi-team.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "clean": "rm -rf dist bin/*.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.64.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "Dockerfile"
+  ],
+  "keywords": [
+    "pi",
+    "agent",
+    "multi-agent",
+    "debate",
+    "llm",
+    "tmux",
+    "orchestration"
+  ],
+  "author": "minzique",
+  "license": "MIT"
+}

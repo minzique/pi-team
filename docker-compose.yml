@@ -1,0 +1,28 @@
+services:
+  pi-team:
+    build: .
+    image: pi-team:local
+    container_name: pi-team
+    environment:
+      # Agent configuration
+      PITEAM_NAME: ${PITEAM_NAME:-debate}
+      PITEAM_AGENTS: ${PITEAM_AGENTS:-claude:anthropic/claude-sonnet-4-5,codex:openai-codex/gpt-5.4:xhigh}
+      PITEAM_TOPIC_FILE: /topics/topic.md
+      PITEAM_MAX_TURNS: ${PITEAM_MAX_TURNS:-20}
+      # Optional auth for hosted deployments
+      PITEAM_TTYD_CREDS: ${PITEAM_TTYD_CREDS:-}
+      PITEAM_HTTP_TOKEN: ${PITEAM_HTTP_TOKEN:-}
+      # LLM API keys (pass through from .env)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+    ports:
+      - "${PITEAM_TTYD_PORT:-7681}:7681"  # web tmux observer
+      - "${PITEAM_HTTP_PORT:-7682}:7682"  # HTTP inject endpoint
+    volumes:
+      - ./topics:/topics:ro               # mount your topic files here
+      - piteam-sessions:/data             # persist session transcripts
+    restart: unless-stopped
+
+volumes:
+  piteam-sessions:

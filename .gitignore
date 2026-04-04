@@ -1,0 +1,13 @@
+node_modules/
+dist/
+bin/*.js
+bin/*.js.map
+*.log
+.DS_Store
+.env
+.env.local
+
+# runtime state
+sessions/
+*.sock
+*.pid
