@@ -1,0 +1,202 @@
+name: Pi PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Adds pi (@mariozechner/pi-coding-agent) as a third reviewer alongside
+# claude-review and codex-review. The point is harness diversity: pi has its
+# own tool harness, skill system, and system prompt that differ from both the
+# Anthropic claude-code-action and the OpenAI codex-action. Running all three
+# gives genuinely different reviews.
+#
+# Provider preference:
+#   1. GEMINI_API_KEY  → google/gemini-2.5-pro  (recommended for model diversity
+#      since claude-review already covers Anthropic and codex-review covers OpenAI)
+#   2. ANTHROPIC_API_KEY → anthropic/claude-sonnet-4-5  (still different harness
+#      behavior from claude-code-action, but same model family)
+#
+# Gated by `vars.PITEAM_PI_REVIEW == 'true'` — opt-in per repo so adding this
+# file doesn't automatically spend credits on every PR. Set the variable to
+# 'true' under Settings → Secrets and variables → Actions → Variables.
+
+jobs:
+  pi:
+    if: |
+      github.event.pull_request.draft == false &&
+      vars.PITEAM_PI_REVIEW == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+
+      - name: Pre-fetch base + head refs
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin "$PR_BASE_REF" "+refs/pull/$PR_NUMBER/head"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install pi
+        run: |
+          npm install -g @mariozechner/pi-coding-agent@latest
+          pi --help | head -3
+
+      - name: Pick provider
+        id: provider
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${GEMINI_API_KEY:-}" ]; then
+            echo "provider=google" >> "$GITHUB_OUTPUT"
+            echo "model=gemini-2.5-pro" >> "$GITHUB_OUTPUT"
+            echo "Using Google Gemini for model diversity"
+          elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "provider=anthropic" >> "$GITHUB_OUTPUT"
+            echo "model=claude-sonnet-4-5" >> "$GITHUB_OUTPUT"
+            echo "Using Anthropic (no GEMINI_API_KEY set)"
+          else
+            echo "::error::Neither GEMINI_API_KEY nor ANTHROPIC_API_KEY is set" >&2
+            exit 1
+          fi
+
+      - name: Run pi review
+        id: review
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REPO: ${{ github.repository }}
+          PROVIDER: ${{ steps.provider.outputs.provider }}
+          MODEL: ${{ steps.provider.outputs.model }}
+        run: |
+          set -euo pipefail
+
+          # Grab the full diff vs base
+          DIFF=$(git diff "origin/${PR_BASE_REF}"...HEAD || true)
+          if [ -z "$DIFF" ]; then
+            echo "::warning::Empty diff, skipping review"
+            echo "" > /tmp/pi-review.md
+            exit 0
+          fi
+
+          # Build the prompt in a temp file (avoids argv length limits on large diffs)
+          cat > /tmp/pi-prompt.md <<PROMPT_EOF
+          You are reviewing pull request #${PR_NUMBER} in ${REPO} — a multi-agent
+          orchestration harness built on pi RPC mode.
+
+          Title: ${PR_TITLE}
+
+          Description:
+          ${PR_BODY:-(no description)}
+
+          You are the THIRD reviewer on this PR alongside claude-review (Anthropic
+          with MCP tools) and codex-review (OpenAI). Two other reviewers are
+          covering their specialties already — your job is to add value with a
+          distinct perspective, not duplicate their findings.
+
+          Focus specifically on:
+          - Correctness of the orchestrator loop, subprocess lifecycle, and
+            JSONL IPC between pi-team and spawned pi instances. This is the
+            load-bearing heart of the repo and any race or leaked handle here
+            bites hard in production.
+          - Plan-aware usage tracking (src/usage/**). Cost math and subscription
+            quota arithmetic. Flag any case where the numbers could be
+            misleading for a user on a fixed plan vs API billing.
+          - Architecture fit with the existing patterns: strict TypeScript, no
+            \`any\`, no \`@ts-ignore\`, small modules, explicit cleanup, no
+            silent catches.
+          - Concurrency + event-loop hazards. Does anything keep the loop alive
+            past shutdown? Unclosed sockets? Missed teardowns?
+          - Security: any new path where unauthenticated input reaches an
+            agent's context over the Unix socket or HTTP bridge?
+
+          Read the code around each change, not just the diff. Use your tools
+          (read, grep, find, ls) to explore the surrounding context. The PR
+          branch is checked out in the current working directory.
+
+          Format your review as:
+
+          ### Verdict
+          LGTM | LGTM with nits | needs changes
+
+          ### Blocking
+          - file:line — one-line description + concrete fix
+
+          ### Important (non-blocking)
+          - file:line — description
+
+          ### Nits
+          - file:line — brief
+
+          ### Summary
+          One or two sentences explaining the verdict.
+
+          Be terse. No filler, no "consider adding tests" boilerplate, no restating
+          what the diff already says. If the code is fine, say so and stop.
+
+          ## Diff
+
+          \`\`\`diff
+          ${DIFF}
+          \`\`\`
+          PROMPT_EOF
+
+          # Run pi non-interactively, read-only tool set, no session persistence
+          pi -p "$(cat /tmp/pi-prompt.md)" \
+             --provider "${PROVIDER}" \
+             --model "${MODEL}" \
+             --tools read,grep,find,ls \
+             --no-session \
+             --no-extensions \
+             --no-skills \
+             --thinking medium \
+             > /tmp/pi-review.md 2> /tmp/pi-stderr.log || {
+               echo "::error::pi exited with non-zero status"
+               echo "--- stderr ---"
+               cat /tmp/pi-stderr.log | tail -40
+               exit 1
+             }
+
+          if [ ! -s /tmp/pi-review.md ]; then
+            echo "::warning::pi produced an empty review"
+            exit 0
+          fi
+
+          echo "Review length: $(wc -l < /tmp/pi-review.md) lines"
+          head -5 /tmp/pi-review.md
+
+      - name: Post review as PR comment
+        if: always() && hashFiles('/tmp/pi-review.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PROVIDER: ${{ steps.provider.outputs.provider }}
+          MODEL: ${{ steps.provider.outputs.model }}
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/pi-review.md ]; then
+            echo "Empty review, skipping comment"
+            exit 0
+          fi
+          {
+            printf '## 🥧 Pi review\n\n'
+            printf '_Reviewed by `pi` running %s/%s._\n\n' "$PROVIDER" "$MODEL"
+            cat /tmp/pi-review.md
+          } > /tmp/pi-comment.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/pi-comment.md
