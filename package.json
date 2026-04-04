@@ -4,7 +4,7 @@
   "description": "Multi-agent debate/collaboration harness built on pi RPC mode. Spawn agents with different models in one conversation, observe via tmux, inject as a human.",
   "type": "module",
   "bin": {
-    "pi-team": "./bin/pi-team.js"
+    "pi-team": "bin/pi-team.js"
   },
   "repository": {
     "type": "git",
