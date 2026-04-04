@@ -77,7 +77,6 @@ function shortenModel(model: string): string {
 	// Drop common prefixes for display
 	return model
 		.replace(/^claude-/, "")
-		.replace(/^gpt-/, "gpt-")
 		.replace(/-20\d{6}$/, "");
 }
 

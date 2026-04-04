@@ -219,8 +219,10 @@ async function cmdStart(flags: Map<string, string[]>): Promise<void> {
 	const scriptPath = process.argv[1];
 	const node = process.execPath;
 	const httpPortFlag = flags.get("http-port")?.[0];
+	const httpHostFlag = flags.get("http-host")?.[0];
 	const httpPortArgs = httpPortFlag ? ` --http-port ${httpPortFlag}` : "";
-	const runCmd = `${node} ${scriptPath} run --config-file ${configPath}${httpPortArgs}`;
+	const httpHostArgs = httpHostFlag ? ` --http-host ${httpHostFlag}` : "";
+	const runCmd = `${node} ${scriptPath} run --config-file ${configPath}${httpPortArgs}${httpHostArgs}`;
 	const injectCmd = `${node} ${scriptPath} inject --name ${config.name}`;
 	const logPath = join(sessionDir, "events.log");
 
@@ -315,18 +317,20 @@ async function runFromConfig(
 	injectServer.start();
 
 	const httpPort = Number(flags.get("http-port")?.[0] ?? process.env.PITEAM_HTTP_PORT ?? "0");
+	const httpHost = flags.get("http-host")?.[0] ?? process.env.PITEAM_HTTP_HOST ?? "127.0.0.1";
 	let httpHandle: { stop: () => void } | null = null;
 	if (httpPort > 0) {
 		httpHandle = startHttpInject({
 			orchestra,
 			port: httpPort,
+			host: httpHost,
 			sessionDir,
 			token: process.env.PITEAM_HTTP_TOKEN,
 			onStop: async () => {
 				await orchestra.stop();
 			},
 		});
-		process.stdout.write(`\x1b[2m· http inject on :${httpPort}\x1b[0m\n`);
+		process.stdout.write(`\x1b[2m· http inject on ${httpHost}:${httpPort}\x1b[0m\n`);
 	}
 
 	const runfile = join(sessionDir, "runfile.json");

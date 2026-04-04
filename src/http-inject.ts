@@ -9,8 +9,10 @@
  *   GET  /transcript    returns JSONL of full transcript
  *   POST /stop          gracefully stops the orchestra
  *
- * All responses JSON. No auth — intended to run on a trusted network or
- * behind a reverse proxy. Set PITEAM_HTTP_TOKEN to require a bearer token.
+ * All responses JSON. Defaults to binding on 127.0.0.1 (localhost-only). Set
+ * host to "0.0.0.0" or another interface to expose over the network — when
+ * you do, you should also set PITEAM_HTTP_TOKEN so untrusted clients on the
+ * LAN can't POST /inject and feed arbitrary text into the agents.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -18,11 +20,16 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Orchestra } from "./orchestra.js";
 
+/** Hard cap on POST /inject body to stop runaway streaming from eating memory. */
+const MAX_BODY_BYTES = 1_000_000; // 1 MB
+
 interface HttpInjectOptions {
 	orchestra: Orchestra;
 	port: number;
 	sessionDir: string;
 	token?: string;
+	/** Interface to bind. Defaults to "127.0.0.1" (localhost-only). */
+	host?: string;
 	onStop?: () => Promise<void>;
 }
 
@@ -110,14 +117,31 @@ export function startHttpInject(opts: HttpInjectOptions): { stop: () => void } {
 			json(res, 500, { error: (err as Error).message });
 		}
 	});
-	server.listen(opts.port, "0.0.0.0");
+	const host = opts.host ?? "127.0.0.1";
+	server.on("error", (err: NodeJS.ErrnoException) => {
+		if (err.code === "EADDRINUSE") {
+			console.error(`[http-inject] port ${opts.port} is already in use on ${host}`);
+		} else {
+			console.error(`[http-inject] server error: ${err.message}`);
+		}
+	});
+	server.listen(opts.port, host);
 	return { stop: () => server.close() };
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
-		req.on("data", (c: Buffer) => chunks.push(c));
+		let total = 0;
+		req.on("data", (c: Buffer) => {
+			total += c.length;
+			if (total > MAX_BODY_BYTES) {
+				req.destroy();
+				reject(new Error(`request body exceeds ${MAX_BODY_BYTES} bytes`));
+				return;
+			}
+			chunks.push(c);
+		});
 		req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
 		req.on("error", reject);
 	});

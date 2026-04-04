@@ -86,7 +86,7 @@ docker compose up --build
 - `:7682` — HTTP API (`POST /inject`, `GET /state`, `GET /transcript`, `POST /stop`)
 - `/data` — persistent session storage
 
-Env: `PITEAM_NAME`, `PITEAM_AGENTS` (comma-separated specs), `PITEAM_TOPIC_FILE` or `PITEAM_TOPIC`, `PITEAM_MAX_TURNS`, `PITEAM_TTYD_CREDS` (basic auth), `PITEAM_HTTP_TOKEN` (bearer).
+Env: `PITEAM_NAME`, `PITEAM_AGENTS` (comma-separated specs), `PITEAM_TOPIC_FILE` or `PITEAM_TOPIC`, `PITEAM_MAX_TURNS`, `PITEAM_TTYD_CREDS` (basic auth), `PITEAM_HTTP_TOKEN` (bearer), `PITEAM_HTTP_HOST` (defaults to `127.0.0.1`; set to `0.0.0.0` only when token is also set).
 
 ## How it works
 
