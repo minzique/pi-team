@@ -24,6 +24,7 @@ import { Observer } from "./observer.js";
 import { InjectServer, runInjectClient } from "./inject-server.js";
 import { createLayout, killSession, sessionExists, tmuxInstalled } from "./tmux.js";
 import { startHttpInject } from "./http-inject.js";
+import { listPlans } from "./usage/plans.js";
 import type { AgentSpec, OrchestraConfig } from "./types.js";
 
 const DEFAULT_SESSIONS_DIR = join(homedir(), ".pi", "team", "sessions");
@@ -59,7 +60,19 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function parseAgentSpec(spec: string): AgentSpec {
-	// name:provider/model[:thinking]
+	// name:provider/model[:thinking][@plan]
+	// Examples:
+	//   claude:anthropic/claude-sonnet-4-5
+	//   codex:openai-codex/gpt-5.4:xhigh
+	//   claude:anthropic/claude-sonnet-4-5@anthropic-max-20x
+	//   codex:openai-codex/gpt-5.4:xhigh@openai-plus
+	let planId: string | undefined;
+	const atIdx = spec.lastIndexOf("@");
+	if (atIdx !== -1) {
+		planId = spec.slice(atIdx + 1);
+		spec = spec.slice(0, atIdx);
+	}
+
 	const firstColon = spec.indexOf(":");
 	if (firstColon === -1) throw new Error(`bad agent spec: "${spec}"`);
 	const name = spec.slice(0, firstColon);
@@ -81,7 +94,22 @@ function parseAgentSpec(spec: string): AgentSpec {
 			thinking = candidate as AgentSpec["thinking"];
 		}
 	}
-	return { name, provider, model, thinking };
+	return { name, provider, model, thinking, planId };
+}
+
+/**
+ * Parse --plan name=plan-id flag values into a map and fold them into agents
+ * that haven't already specified a plan via the @ suffix.
+ */
+function applyPlanFlags(agents: AgentSpec[], planFlags: string[] | undefined): AgentSpec[] {
+	if (!planFlags) return agents;
+	const planMap = new Map<string, string>();
+	for (const raw of planFlags) {
+		const eq = raw.indexOf("=");
+		if (eq === -1) throw new Error(`bad --plan value: "${raw}" (expected name=plan-id)`);
+		planMap.set(raw.slice(0, eq), raw.slice(eq + 1));
+	}
+	return agents.map((a) => (a.planId ? a : { ...a, planId: planMap.get(a.name) ?? a.planId }));
 }
 
 function help(): void {
@@ -90,38 +118,55 @@ function help(): void {
 
 USAGE
   pi-team start    --name <name> --agent <spec> --agent <spec> [--topic <text> | --topic-file <path>]
-                   [--max-turns N] [--mode round-robin]
+                   [--plan <name=plan-id>] [--max-turns N]
   pi-team run      (same flags as start, but foreground, no tmux)
   pi-team inject   --name <name>
   pi-team stop     --name <name>
   pi-team list
+  pi-team plans
   pi-team help
 
 AGENT SPEC
-  name:provider/model[:thinking]
+  name:provider/model[:thinking][@plan-id]
     claude:anthropic/claude-sonnet-4-5
     codex:openai-codex/gpt-5.4:xhigh
-    gem:google/gemini-3-pro-preview:high
+    claude:anthropic/claude-sonnet-4-5@anthropic-max-20x
+    codex:openai-codex/gpt-5.4:xhigh@openai-plus
+
+PLAN-AWARE COST TRACKING
+  Without --plan (or @plan suffix), pi-team shows dollar cost from pi’s
+  per-token pricing — which is wrong if you’re on a subscription. Declare
+  your plan per agent to get real 5-hour and weekly window usage instead:
+
+    pi-team start --name x \\
+      --agent claude:anthropic/claude-sonnet-4-5 \\
+      --agent codex:openai-codex/gpt-5.4:xhigh \\
+      --plan claude=anthropic-max-20x \\
+      --plan codex=openai-plus \\
+      --topic-file ./topic.md
+
+  Run 'pi-team plans' to list available plan ids.
 
 EXAMPLES
   # Start an emotion-concepts debate between Claude and Codex, observable via tmux
   pi-team start \\
     --name emotions \\
-    --agent claude:anthropic/claude-sonnet-4-5 \\
-    --agent codex:openai-codex/gpt-5.4:xhigh \\
+    --agent claude:anthropic/claude-sonnet-4-5@anthropic-max-20x \\
+    --agent codex:openai-codex/gpt-5.4:xhigh@openai-plus \\
     --max-turns 10 \\
     --topic-file ./debate-prompt.md
 
-  # Attach to watch and inject:
-  tmux attach -t emotions
-
-  # Or inject from another terminal without attaching:
+  tmux attach -t piteam-emotions
   pi-team inject --name emotions
-
-  # Stop the session:
   pi-team stop --name emotions
 `,
 	);
+}
+
+function cmdPlans(): void {
+	for (const id of listPlans()) {
+		process.stdout.write(`${id}\n`);
+	}
 }
 
 function resolveTopic(flags: Map<string, string[]>): string {
@@ -137,7 +182,8 @@ function buildConfig(flags: Map<string, string[]>): OrchestraConfig {
 	if (!name) throw new Error("missing --name");
 	const agentSpecs = flags.get("agent") ?? [];
 	if (agentSpecs.length < 2) throw new Error("need at least two --agent specs");
-	const agents = agentSpecs.map(parseAgentSpec);
+	const parsed = agentSpecs.map(parseAgentSpec);
+	const agents = applyPlanFlags(parsed, flags.get("plan"));
 	const topic = resolveTopic(flags);
 	const maxTurns = Number(flags.get("max-turns")?.[0] ?? "20");
 	const turnDelayMs = Number(flags.get("turn-delay-ms")?.[0] ?? "0");
@@ -148,68 +194,7 @@ function buildConfig(flags: Map<string, string[]>): OrchestraConfig {
 
 async function cmdRun(flags: Map<string, string[]>): Promise<void> {
 	const config = buildConfig(flags);
-	const orchestra = new Orchestra(config);
-	const sessionDir = join(config.sessionsDir, config.name);
-	const logPath = join(sessionDir, "events.log");
-	const socketPath = join(sessionDir, "inject.sock");
-
-	new Observer(orchestra, logPath);
-
-	const injectServer = new InjectServer(orchestra, socketPath);
-	injectServer.start();
-
-	// Optional HTTP inject endpoint for remote/containerized integrations
-	const httpPort = Number(flags.get("http-port")?.[0] ?? process.env.PITEAM_HTTP_PORT ?? "0");
-	let httpHandle: { stop: () => void } | null = null;
-	if (httpPort > 0) {
-		httpHandle = startHttpInject({
-			orchestra,
-			port: httpPort,
-			sessionDir,
-			token: process.env.PITEAM_HTTP_TOKEN,
-			onStop: async () => {
-				await orchestra.stop();
-			},
-		});
-		process.stdout.write(`\x1b[2m· http inject on :${httpPort}\x1b[0m\n`);
-	}
-
-	// Write a runfile so `inject` / `stop` can find this session
-	const runfile = join(sessionDir, "runfile.json");
-	writeFileSync(
-		runfile,
-		JSON.stringify(
-			{ pid: process.pid, socket: socketPath, httpPort, started: Date.now(), config },
-			null,
-			2,
-		),
-	);
-
-	const shutdown = async () => {
-		process.stdout.write("\n\x1b[2m· shutting down\x1b[0m\n");
-		injectServer.stop();
-		httpHandle?.stop();
-		await orchestra.stop();
-		process.exit(0);
-	};
-	process.on("SIGINT", shutdown);
-	process.on("SIGTERM", shutdown);
-
-	try {
-		await orchestra.start();
-	} catch (err) {
-		process.stderr.write(`\n\x1b[31mfatal:\x1b[0m ${(err as Error).message}\n`);
-		injectServer.stop();
-		httpHandle?.stop();
-		await orchestra.stop();
-		process.exit(1);
-	}
-	// Natural completion (max turns reached, etc.) — tear everything down
-	// or the pi child processes keep the event loop alive forever.
-	injectServer.stop();
-	httpHandle?.stop();
-	await orchestra.stop();
-	process.exit(0);
+	await runFromConfig(config, flags);
 }
 
 async function cmdStart(flags: Map<string, string[]>): Promise<void> {
@@ -310,21 +295,73 @@ async function cmdRunWithConfigFile(flags: Map<string, string[]>): Promise<void>
 		return cmdRun(flags);
 	}
 	const config = JSON.parse(readFileSync(cf, "utf8")) as OrchestraConfig;
-	const fakeFlags = new Map<string, string[]>();
-	fakeFlags.set("name", [config.name]);
-	for (const a of config.agents) {
-		const spec = `${a.name}:${a.provider}/${a.model}${a.thinking ? `:${a.thinking}` : ""}`;
-		const cur = fakeFlags.get("agent") ?? [];
-		cur.push(spec);
-		fakeFlags.set("agent", cur);
+	// Use the loaded config directly — it already contains AgentSpec objects
+	// with planId preserved. Don't round-trip through string-based flags.
+	await runFromConfig(config, flags);
+}
+
+async function runFromConfig(
+	config: OrchestraConfig,
+	flags: Map<string, string[]>,
+): Promise<void> {
+	const orchestra = new Orchestra(config);
+	const sessionDir = join(config.sessionsDir, config.name);
+	const logPath = join(sessionDir, "events.log");
+	const socketPath = join(sessionDir, "inject.sock");
+
+	new Observer(orchestra, logPath);
+
+	const injectServer = new InjectServer(orchestra, socketPath);
+	injectServer.start();
+
+	const httpPort = Number(flags.get("http-port")?.[0] ?? process.env.PITEAM_HTTP_PORT ?? "0");
+	let httpHandle: { stop: () => void } | null = null;
+	if (httpPort > 0) {
+		httpHandle = startHttpInject({
+			orchestra,
+			port: httpPort,
+			sessionDir,
+			token: process.env.PITEAM_HTTP_TOKEN,
+			onStop: async () => {
+				await orchestra.stop();
+			},
+		});
+		process.stdout.write(`\x1b[2m· http inject on :${httpPort}\x1b[0m\n`);
 	}
-	fakeFlags.set("topic", [config.topic]);
-	fakeFlags.set("max-turns", [String(config.maxTurns)]);
-	fakeFlags.set("sessions-dir", [config.sessionsDir]);
-	// Preserve --http-port if passed on the command line
-	const httpPort = flags.get("http-port")?.[0];
-	if (httpPort) fakeFlags.set("http-port", [httpPort]);
-	await cmdRun(fakeFlags);
+
+	const runfile = join(sessionDir, "runfile.json");
+	writeFileSync(
+		runfile,
+		JSON.stringify(
+			{ pid: process.pid, socket: socketPath, httpPort, started: Date.now(), config },
+			null,
+			2,
+		),
+	);
+
+	const shutdown = async () => {
+		process.stdout.write("\n\x1b[2m· shutting down\x1b[0m\n");
+		injectServer.stop();
+		httpHandle?.stop();
+		await orchestra.stop();
+		process.exit(0);
+	};
+	process.on("SIGINT", shutdown);
+	process.on("SIGTERM", shutdown);
+
+	try {
+		await orchestra.start();
+	} catch (err) {
+		process.stderr.write(`\n\x1b[31mfatal:\x1b[0m ${(err as Error).message}\n`);
+		injectServer.stop();
+		httpHandle?.stop();
+		await orchestra.stop();
+		process.exit(1);
+	}
+	injectServer.stop();
+	httpHandle?.stop();
+	await orchestra.stop();
+	process.exit(0);
 }
 
 async function main(): Promise<void> {
@@ -345,6 +382,9 @@ async function main(): Promise<void> {
 				break;
 			case "list":
 				cmdList(parsed.flags);
+				break;
+			case "plans":
+				cmdPlans();
 				break;
 			case "help":
 			case "--help":

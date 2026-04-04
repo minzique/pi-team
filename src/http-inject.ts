@@ -60,8 +60,17 @@ export function startHttpInject(opts: HttpInjectOptions): { stop: () => void } {
 						name: a.name,
 						provider: a.provider,
 						model: a.model,
+						planId: a.planId ?? "api",
 					})),
 					lastMessages: opts.orchestra.lastMessages(5),
+					usage: opts.orchestra.usageSnapshots(),
+				});
+			}
+
+			if (req.method === "GET" && url === "/usage") {
+				return json(res, 200, {
+					session: opts.orchestra.config.name,
+					snapshots: opts.orchestra.usageSnapshots(),
 				});
 			}
 
@@ -86,7 +95,13 @@ export function startHttpInject(opts: HttpInjectOptions): { stop: () => void } {
 				return json(res, 200, {
 					service: "pi-team",
 					session: opts.orchestra.config.name,
-					endpoints: ["POST /inject", "GET /state", "GET /transcript", "POST /stop"],
+					endpoints: [
+						"POST /inject",
+						"GET /state",
+						"GET /usage",
+						"GET /transcript",
+						"POST /stop",
+					],
 				});
 			}
 
