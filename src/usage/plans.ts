@@ -56,7 +56,10 @@ export const openaiPro: PlanLimits = {
 	provider: "openai-codex",
 	tier: "pro",
 	mode: "subscription",
-	description: "ChatGPT Pro ($200/mo) — 6x Plus limits (currently 2x promo)",
+	// 6x Plus matches the published Pro ratio. Leaving the description and
+	// the numbers consistent so users don't see a "6x values but 2x promo"
+	// mismatch. Source: openai.com/chatgpt/pricing and the Codex docs.
+	description: "ChatGPT Pro ($200/mo) — 6x Plus limits",
 	short: {
 		durationMs: FIVE_HOURS_MS,
 		unit: "messages",

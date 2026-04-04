@@ -82,6 +82,11 @@ export class UsageTracker {
 		const plan = this.plansByAgent.get(agentName);
 		if (!turns || !plan) return null;
 
+		// `total` is computed as the sum of the four individual counters (one
+		// source of truth). Pi's own `usage.totalTokens` can include cached
+		// tokens in a different way across providers, so summing here keeps
+		// session totals consistent with the field breakdown exposed via
+		// /state and /usage.
 		const sessionTokens = {
 			input: 0,
 			output: 0,
@@ -97,11 +102,12 @@ export class UsageTracker {
 			sessionTokens.output += t.tokens.output;
 			sessionTokens.cacheRead += t.tokens.cacheRead;
 			sessionTokens.cacheWrite += t.tokens.cacheWrite;
-			sessionTokens.total += t.tokens.total;
 			sessionDollarCost += t.dollarCost;
 			latestProvider = t.provider || latestProvider;
 			latestModel = t.model || latestModel;
 		}
+		sessionTokens.total =
+			sessionTokens.input + sessionTokens.output + sessionTokens.cacheRead + sessionTokens.cacheWrite;
 
 		const now = Date.now();
 		const shortSnap = plan.short ? computeWindow(turns, plan.short, now) : undefined;
@@ -165,8 +171,17 @@ function computeWindow(
 		used = outputTokens / 2000 / 60; // hours
 	}
 
-	// Earliest turn in window tells us when the oldest will roll out
-	const oldest = inWindow.length > 0 ? inWindow[0].timestamp : now;
+	// Earliest turn in window tells us when the oldest will roll out.
+	// inWindow is filtered in iteration order — not guaranteed to be
+	// chronologically sorted if the underlying session JSONL was ever
+	// re-ordered or merged. Scan explicitly.
+	let oldest = now;
+	if (inWindow.length > 0) {
+		oldest = inWindow[0].timestamp;
+		for (let i = 1; i < inWindow.length; i++) {
+			if (inWindow[i].timestamp < oldest) oldest = inWindow[i].timestamp;
+		}
+	}
 	const nextResetAt = oldest + window.durationMs;
 
 	return {
