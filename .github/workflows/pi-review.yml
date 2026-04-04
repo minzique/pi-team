@@ -48,8 +48,12 @@ jobs:
           node-version: '24'
 
       - name: Install pi
+        env:
+          # Pin the pi version to avoid accidentally pulling a compromised release.
+          # Bump this deliberately when you want a newer pi.
+          PI_VERSION: '0.65.0'
         run: |
-          npm install -g @mariozechner/pi-coding-agent@latest
+          npm install -g "@mariozechner/pi-coding-agent@${PI_VERSION}"
           pi --help | head -3
 
       - name: Pick provider
@@ -157,8 +161,10 @@ jobs:
           \`\`\`
           PROMPT_EOF
 
-          # Run pi non-interactively, read-only tool set, no session persistence
-          pi -p "$(cat /tmp/pi-prompt.md)" \
+          # Use pi's @filename syntax to inject the prompt from a file.
+          # This puts only the PATH on argv, not the whole diff, so large PRs
+          # never hit ARG_MAX.
+          pi -p "@/tmp/pi-prompt.md" \
              --provider "${PROVIDER}" \
              --model "${MODEL}" \
              --tools read,grep,find,ls \
@@ -169,7 +175,7 @@ jobs:
              > /tmp/pi-review.md 2> /tmp/pi-stderr.log || {
                echo "::error::pi exited with non-zero status"
                echo "--- stderr ---"
-               cat /tmp/pi-stderr.log | tail -40
+               tail -40 /tmp/pi-stderr.log
                exit 1
              }
 
@@ -182,7 +188,11 @@ jobs:
           head -5 /tmp/pi-review.md
 
       - name: Post review as PR comment
-        if: always() && hashFiles('/tmp/pi-review.md') != ''
+        # Always run so a previous-step failure still gets a comment if there's
+        # any review content. hashFiles() can't be used here because it only
+        # resolves paths inside GITHUB_WORKSPACE, not /tmp. The shell guard
+        # below handles the empty-file case.
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
