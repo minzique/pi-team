@@ -18,7 +18,6 @@ permissions:
 
 jobs:
   claude:
-    # Skip draft PRs; allow manual @claude mentions on draft via comment event
     if: |
       github.event_name != 'pull_request' ||
       github.event.pull_request.draft == false
@@ -32,17 +31,14 @@ jobs:
       - name: Run Claude
         uses: anthropics/claude-code-action@v1
         with:
-          # Subscription auth via long-lived OAuth token.
-          # Set via:
-          #   claude setup-token
-          #   gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo minzique/pi-team --body "<token>"
-          # Falls back to ANTHROPIC_API_KEY if the OAuth token isn't set (API billing).
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           trigger_phrase: "@claude"
-          # On PR open/update, auto-run a focused review (no mention needed).
-          # On comments/mentions, the action auto-detects @claude and runs.
+          track_progress: true
           prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+
             You are reviewing a pull request on `minzique/pi-team`, a multi-agent
             orchestration harness built on pi RPC mode. Read the diff and the
             existing code around it carefully. Think like an outside reviewer
@@ -63,7 +59,7 @@ jobs:
               that lets unauthenticated input reach an agent's context?
             - Plan-aware usage tracking (src/usage/**). The cost/limit numbers
               matter — flag anything that could show wrong percentages or
-              leak the actual API cost as authoritative for subscription users.
+              leak API cost as authoritative for subscription users.
             - TypeScript strictness. No silent `any`, no type assertions hiding
               real issues.
 
@@ -71,4 +67,18 @@ jobs:
             When the code is fine, say so and move on. Do not pad with
             "consider adding tests" unless the omission is genuinely load-bearing.
 
-            End with a verdict line: "LGTM", "LGTM with nits", or "needs changes".
+            The PR branch is already checked out in the current working directory.
+
+            How to post your review:
+            - Use `mcp__github_inline_comment__create_inline_comment` (with
+              `confirmed: true`) for line-specific issues. One per finding.
+            - Use `gh pr comment $PR_NUMBER --body "..."` for the top-level
+              summary comment. End the summary with one of:
+                LGTM
+                LGTM with nits
+                needs changes
+            - Only post GitHub comments — don't output review text as a plain
+              message back to the user. The comments ARE the review.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(cat:*),Bash(grep:*),Bash(rg:*),Bash(find:*),Bash(ls:*)"
