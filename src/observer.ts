@@ -9,6 +9,8 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Orchestra } from "./orchestra.js";
+import { formatSnapshot } from "./usage/reporter.js";
+import type { UsageSnapshot } from "./usage/types.js";
 import type { TeamEvent } from "./types.js";
 
 const AGENT_COLORS = [
@@ -50,6 +52,13 @@ export class Observer {
 		orchestra.on("tool", (agentName: string, toolName: string, phase: "start" | "end") =>
 			this.onTool(agentName, toolName, phase),
 		);
+		orchestra.on("usage", (snap: UsageSnapshot) => this.onUsage(snap));
+	}
+
+	private onUsage(snap: UsageSnapshot): void {
+		const line = formatSnapshot(snap, { color: true });
+		process.stdout.write(`${DIM}  ⤷ ${RESET}${line}\n`);
+		this.writeLog(`usage: ${formatSnapshot(snap, { color: false })}`);
 	}
 
 	private colorFor(from: string): string {

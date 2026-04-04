@@ -19,6 +19,11 @@ export interface AgentSpec {
 	systemPromptAppend?: string;
 	/** Optional initial message this agent is told before the topic. */
 	briefing?: string;
+	/**
+	 * Subscription plan id (e.g. "anthropic-max-20x", "openai-plus", "api").
+	 * Controls whether usage is displayed as $ cost (api) or window %s (subscription).
+	 */
+	planId?: string;
 }
 
 export interface TeamMessage {

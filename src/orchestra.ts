@@ -14,6 +14,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Agent } from "./agent.js";
 import { Transcript } from "./transcript.js";
+import { UsageTracker } from "./usage/tracker.js";
+import type { UsageSnapshot } from "./usage/types.js";
 import type { AgentSpec, OrchestraConfig, TeamEvent, TeamMessage } from "./types.js";
 
 export interface OrchestraEvents {
@@ -26,7 +28,9 @@ export class Orchestra extends EventEmitter {
 	readonly config: OrchestraConfig;
 	readonly transcript: Transcript;
 	readonly agents: Agent[] = [];
+	readonly usage: UsageTracker;
 	private agentLastSeen = new Map<string, number>();
+	private agentSessionPaths = new Map<string, string>();
 	private pendingInjections: string[] = [];
 	private running = false;
 	private turn = 0;
@@ -38,6 +42,7 @@ export class Orchestra extends EventEmitter {
 		this.sessionDir = join(config.sessionsDir, config.name);
 		mkdirSync(this.sessionDir, { recursive: true });
 		this.transcript = new Transcript(join(this.sessionDir, "transcript.jsonl"));
+		this.usage = new UsageTracker();
 	}
 
 	async start(): Promise<void> {
@@ -78,6 +83,14 @@ export class Orchestra extends EventEmitter {
 
 	private createAgent(spec: AgentSpec): Agent {
 		const sessionPath = join(this.sessionDir, `agent-${spec.name}.session.jsonl`);
+		this.agentSessionPaths.set(spec.name, sessionPath);
+		this.usage.register({
+			name: spec.name,
+			provider: spec.provider,
+			model: spec.model,
+			sessionPath,
+			planId: spec.planId ?? "api",
+		});
 		const agent = new Agent({ spec, sessionPath });
 		agent.on("delta", (name: string, text: string) => {
 			this.emit("delta", name, text);
@@ -148,6 +161,15 @@ export class Orchestra extends EventEmitter {
 				content: replyText,
 			});
 			this.emitEvent({ type: "message", timestamp: msg.timestamp, message: msg });
+
+			// Refresh usage snapshot for this agent and emit it
+			const sessionPath = this.agentSessionPaths.get(agent.name);
+			if (sessionPath) {
+				this.usage.syncAgent(agent.name, sessionPath);
+				const snap = this.usage.snapshot(agent.name);
+				if (snap) this.emit("usage", snap);
+			}
+
 			this.emitEvent({ type: "turn_end", timestamp: Date.now(), agent: agent.name });
 
 			this.turn++;
@@ -190,5 +212,9 @@ export class Orchestra extends EventEmitter {
 	lastMessages(n: number): TeamMessage[] {
 		const all = this.transcript.all();
 		return all.slice(Math.max(0, all.length - n));
+	}
+
+	usageSnapshots(): UsageSnapshot[] {
+		return this.usage.snapshotAll();
 	}
 }

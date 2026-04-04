@@ -29,7 +29,27 @@ tmux attach -t piteam-emotions
 
 Three panes: stream, inject, log tail. Type in the inject pane to hop in — all agents see it at the next turn boundary. Detach with `Ctrl+b d`.
 
-Agent spec: `name:provider/model[:thinking]`. The name is used as attribution and persona (`skeptic:anthropic/...`, `optimist:openai-codex/...`).
+Agent spec: `name:provider/model[:thinking][@plan-id]`. The name is used as attribution and persona (`skeptic:anthropic/...`, `optimist:openai-codex/...`).
+
+## Usage tracking
+
+Pi's per-token dollar display is wrong if you're on a subscription — the real constraint is 5-hour and weekly usage limits. Declare your plan per agent to get window-based tracking:
+
+```bash
+pi-team start --name x \
+  --agent claude:anthropic/claude-sonnet-4-5@anthropic-max-20x \
+  --agent codex:openai-codex/gpt-5.4:xhigh@openai-plus \
+  --topic-file debate.md
+```
+
+After every turn you get a per-agent status line:
+
+```
+claude   │ sonnet-4-5         │ 5h: 12/900–4500 msg (1%) · wk: 0.4/800 h  anthropic-max-20x
+codex    │ gpt-5.4            │ 5h: 5/33–168 msg (15%)  openai-plus
+```
+
+Plans: `openai-plus`, `openai-pro`, `openai-business`, `anthropic-pro`, `anthropic-max-5x`, `anthropic-max-20x`, `api`. Run `pi-team plans` to list. Without a plan, pi-team falls back to `api` mode and shows raw token counts + pay-per-token dollar cost. Fetch snapshots programmatically at `GET /usage`.
 
 ## Commands
 
@@ -66,7 +86,7 @@ docker compose up --build
 - `:7682` — HTTP API (`POST /inject`, `GET /state`, `GET /transcript`, `POST /stop`)
 - `/data` — persistent session storage
 
-Env: `PITEAM_NAME`, `PITEAM_AGENTS` (comma-separated specs), `PITEAM_TOPIC_FILE` or `PITEAM_TOPIC`, `PITEAM_MAX_TURNS`, `PITEAM_TTYD_CREDS` (basic auth), `PITEAM_HTTP_TOKEN` (bearer).
+Env: `PITEAM_NAME`, `PITEAM_AGENTS` (comma-separated specs), `PITEAM_TOPIC_FILE` or `PITEAM_TOPIC`, `PITEAM_MAX_TURNS`, `PITEAM_TTYD_CREDS` (basic auth), `PITEAM_HTTP_TOKEN` (bearer), `PITEAM_HTTP_HOST` (defaults to `127.0.0.1`; set to `0.0.0.0` only when token is also set).
 
 ## How it works
 
