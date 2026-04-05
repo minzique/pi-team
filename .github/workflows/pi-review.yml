@@ -188,10 +188,14 @@ jobs:
           print(tmpl)
           PY_EOF
 
-          # Use pi's @filename syntax to inject the prompt from a file.
-          # This puts only the PATH on argv, not the whole diff, so large PRs
-          # never hit ARG_MAX.
-          pi -p "@/tmp/pi-prompt.md" \
+          # Send the prompt via stdin. pi's -p flag with no value reads the
+          # prompt from stdin, which keeps large diffs off argv (no ARG_MAX)
+          # and feeds the file CONTENTS as the actual prompt. We deliberately
+          # do NOT use `pi -p "@/tmp/pi-prompt.md"` — that syntax treats the
+          # file as an ATTACHMENT (prompt-injection protection), not as the
+          # prompt itself, so pi would just ask the user what to do with the
+          # attached file and produce a garbage review.
+          if ! pi -p \
              --provider "${PROVIDER}" \
              --model "${MODEL}" \
              --tools read,grep,find,ls \
@@ -199,12 +203,13 @@ jobs:
              --no-extensions \
              --no-skills \
              --thinking medium \
-             > /tmp/pi-review.md 2> /tmp/pi-stderr.log || {
-               echo "::error::pi exited with non-zero status"
-               echo "--- stderr ---"
-               tail -40 /tmp/pi-stderr.log
-               exit 1
-             }
+             < /tmp/pi-prompt.md \
+             > /tmp/pi-review.md 2> /tmp/pi-stderr.log; then
+            echo "::error::pi exited with non-zero status"
+            echo "--- stderr ---"
+            tail -40 /tmp/pi-stderr.log
+            exit 1
+          fi
 
           if [ ! -s /tmp/pi-review.md ]; then
             echo "::warning::pi produced an empty review"
