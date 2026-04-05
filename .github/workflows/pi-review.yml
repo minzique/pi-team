@@ -54,7 +54,9 @@ jobs:
           PI_VERSION: '0.65.0'
         run: |
           npm install -g "@mariozechner/pi-coding-agent@${PI_VERSION}"
-          pi --help | head -3
+          # Plain `pi --version` — piping to head swallows non-zero exit codes
+          # and masks a failed install (pi-review.yml nit from pi's own review)
+          pi --version
 
       - name: Pick provider
         id: provider
@@ -91,16 +93,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Grab the full diff vs base
-          DIFF=$(git diff "origin/${PR_BASE_REF}"...HEAD || true)
+          # Grab the full diff vs base. Don't swallow errors with `|| true`
+          # — a real git failure (bad base ref, missing objects) should surface,
+          # not silently turn into a "no diff" warning.
+          DIFF=$(git diff "origin/${PR_BASE_REF}"...HEAD)
           if [ -z "$DIFF" ]; then
             echo "::warning::Empty diff, skipping review"
             echo "" > /tmp/pi-review.md
             exit 0
           fi
 
-          # Build the prompt in a temp file (avoids argv length limits on large diffs)
-          cat > /tmp/pi-prompt.md <<PROMPT_EOF
+          # Build the prompt in a temp file (avoids argv length limits on large
+          # diffs). Use a long-unique heredoc delimiter + quote it to disable
+          # parameter expansion inside the body — otherwise a PR adding a file
+          # that contains `PROMPT_EOF` on a line by itself would terminate the
+          # heredoc early and sabotage its own review run. We still want shell
+          # variables expanded in the prompt, so we do the expansion ourselves
+          # using envsubst-style Python (stdlib) and feed the result in.
+          PROMPT_TEMPLATE=$(cat <<'PI_REVIEW_PROMPT_TEMPLATE_EOF_v1'
           You are reviewing pull request #${PR_NUMBER} in ${REPO} — a multi-agent
           orchestration harness built on pi RPC mode.
 
@@ -123,7 +133,7 @@ jobs:
             quota arithmetic. Flag any case where the numbers could be
             misleading for a user on a fixed plan vs API billing.
           - Architecture fit with the existing patterns: strict TypeScript, no
-            \`any\`, no \`@ts-ignore\`, small modules, explicit cleanup, no
+            `any`, no `@ts-ignore`, small modules, explicit cleanup, no
             silent catches.
           - Concurrency + event-loop hazards. Does anything keep the loop alive
             past shutdown? Unclosed sockets? Missed teardowns?
@@ -156,10 +166,27 @@ jobs:
 
           ## Diff
 
-          \`\`\`diff
-          ${DIFF}
-          \`\`\`
-          PROMPT_EOF
+          ```diff
+          __PI_REVIEW_DIFF_PLACEHOLDER__
+          ```
+          PI_REVIEW_PROMPT_TEMPLATE_EOF_v1
+          )
+
+          # Substitute placeholders with shell vars via stdlib Python. This
+          # keeps the heredoc body fully literal (no shell expansion, no early
+          # termination risk) while still letting us inject the dynamic bits.
+          # NOTE: export PROMPT_TEMPLATE too — Python reads it from env below.
+          export PROMPT_TEMPLATE PR_NUMBER REPO PR_TITLE PR_BODY DIFF
+          python3 - <<'PY_EOF' > /tmp/pi-prompt.md
+          import os
+          tmpl = os.environ["PROMPT_TEMPLATE"]
+          tmpl = tmpl.replace("${PR_NUMBER}", os.environ.get("PR_NUMBER", ""))
+          tmpl = tmpl.replace("${REPO}", os.environ.get("REPO", ""))
+          tmpl = tmpl.replace("${PR_TITLE}", os.environ.get("PR_TITLE", ""))
+          tmpl = tmpl.replace("${PR_BODY:-(no description)}", os.environ.get("PR_BODY") or "(no description)")
+          tmpl = tmpl.replace("__PI_REVIEW_DIFF_PLACEHOLDER__", os.environ.get("DIFF", ""))
+          print(tmpl)
+          PY_EOF
 
           # Use pi's @filename syntax to inject the prompt from a file.
           # This puts only the PATH on argv, not the whole diff, so large PRs
