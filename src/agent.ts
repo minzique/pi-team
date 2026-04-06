@@ -29,6 +29,11 @@ export interface AgentOptions {
 	systemPromptFile?: string;
 	/** Environment overrides for the pi subprocess */
 	env?: Record<string, string>;
+	/**
+	 * Override the spec's tool setting for this instance. Used by the
+	 * briefing phase to spawn a tools-enabled agent from a no-tools spec.
+	 */
+	toolsOverride?: string[] | false | undefined;
 }
 
 /**
@@ -71,6 +76,12 @@ export class Agent extends EventEmitter {
 		];
 		if (this.spec.thinking) {
 			args.push("--thinking", this.spec.thinking);
+		}
+		const tools = this.opts.toolsOverride !== undefined ? this.opts.toolsOverride : this.spec.tools;
+		if (tools === false) {
+			args.push("--no-tools");
+		} else if (Array.isArray(tools) && tools.length > 0) {
+			args.push("--tools", tools.join(","));
 		}
 		if (this.opts.systemPromptFile) {
 			args.push("--append-system-prompt", this.opts.systemPromptFile);

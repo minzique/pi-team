@@ -24,6 +24,13 @@ export interface AgentSpec {
 	 * Controls whether usage is displayed as $ cost (api) or window %s (subscription).
 	 */
 	planId?: string;
+	/**
+	 * Tool access control for this agent.
+	 * - `false` → `--no-tools` (pure reasoning, no file access)
+	 * - `string[]` → `--tools read,grep,...` (restricted tool set)
+	 * - `undefined` → pi default (all tools: read,bash,edit,write)
+	 */
+	tools?: string[] | false;
 }
 
 export interface TeamMessage {
@@ -56,6 +63,23 @@ export interface OrchestraConfig {
 	sharedContext?: string;
 	/** Idle timeout ms between turns (for rate-limiting) */
 	turnDelayMs: number;
+	/**
+	 * Run a briefing phase before the debate. Each agent gets one research
+	 * turn with full tool access to explore the codebase, then the main
+	 * debate runs with the configured (typically restricted) tools. Each
+	 * agent's research is included as private context in their first turn.
+	 */
+	briefingPhase?: boolean;
+	/**
+	 * Custom briefing prompt. If omitted, a default prompt instructs agents
+	 * to research the topic and prepare their position.
+	 */
+	briefingPrompt?: string;
+	/**
+	 * Timeout (ms) for each agent's briefing turn. Default: 5 minutes.
+	 * Briefing is research, not debate — cap it so agents don't spiral.
+	 */
+	briefingTimeoutMs?: number;
 }
 
 export interface TeamEvent {
