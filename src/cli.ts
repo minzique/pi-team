@@ -118,7 +118,7 @@ function help(): void {
 
 USAGE
   pi-team start    --name <name> --agent <spec> --agent <spec> [--topic <text> | --topic-file <path>]
-                   [--plan <name=plan-id>] [--max-turns N]
+                   [--plan <name=plan-id>] [--max-turns N] [--no-tools] [--briefing]
   pi-team run      (same flags as start, but foreground, no tmux)
   pi-team inject   --name <name>
   pi-team stop     --name <name>
@@ -133,9 +133,31 @@ AGENT SPEC
     claude:anthropic/claude-sonnet-4-5@anthropic-max-20x
     codex:openai-codex/gpt-5.4:xhigh@openai-plus
 
+TOOL CONTROL
+  By default, debate agents get full pi tools (read, bash, edit, write).
+  For pure-reasoning debates, restrict or disable tools:
+
+    --no-tools                  Disable tools for all agents
+    --tools read,grep,find,ls   Restrict all agents to read-only tools
+    --tools claude=read,grep    Per-agent: Claude gets read-only, others default
+
+  Combine with --briefing for the best of both: agents explore with full
+  tools first, then debate with restricted tools.
+
+BRIEFING PHASE
+  --briefing                    Enable pre-debate research phase
+  --briefing-prompt <text>      Custom research prompt (default: auto-generated)
+  --briefing-file <path>        Load research prompt from file
+  --briefing-timeout <ms>       Per-agent briefing timeout (default: 300000 = 5m)
+
+  Each agent gets one research turn with FULL tool access to explore the
+  codebase before the debate starts. Their findings are injected as private
+  context in their first debate turn. Debate turns then run with whatever
+  --tools / --no-tools you configured.
+
 PLAN-AWARE COST TRACKING
-  Without --plan (or @plan suffix), pi-team shows dollar cost from pi’s
-  per-token pricing — which is wrong if you’re on a subscription. Declare
+  Without --plan (or @plan suffix), pi-team shows dollar cost from pi's
+  per-token pricing — which is wrong if you're on a subscription. Declare
   your plan per agent to get real 5-hour and weekly window usage instead:
 
     pi-team start --name x \\
@@ -148,13 +170,23 @@ PLAN-AWARE COST TRACKING
   Run 'pi-team plans' to list available plan ids.
 
 EXAMPLES
-  # Start an emotion-concepts debate between Claude and Codex, observable via tmux
-  pi-team start \\
-    --name emotions \\
+  # Pure reasoning debate (no file access)
+  pi-team start --name arch-choice --no-tools \\
     --agent claude:anthropic/claude-sonnet-4-5@anthropic-max-20x \\
     --agent codex:openai-codex/gpt-5.4:xhigh@openai-plus \\
-    --max-turns 10 \\
-    --topic-file ./debate-prompt.md
+    --max-turns 8 --topic-file ./topic.md
+
+  # Briefing + debate: agents research codebase first, then debate tool-free
+  pi-team start --name persistence-fix --no-tools --briefing \\
+    --agent claude:anthropic/claude-opus-4-6:high@anthropic-max-20x \\
+    --agent codex:openai-codex/gpt-5.4:xhigh@openai-plus \\
+    --max-turns 10 --topic-file ./debate-topic.md
+
+  # Read-only tools (agents can read files during debate, but not edit)
+  pi-team start --name review --tools read,grep,find,ls \\
+    --agent claude:anthropic/claude-sonnet-4-5 \\
+    --agent codex:openai-codex/gpt-5.4:xhigh \\
+    --max-turns 6 --topic "Review the error handling in src/api/"
 
   tmux attach -t piteam-emotions
   pi-team inject --name emotions
@@ -177,19 +209,63 @@ function resolveTopic(flags: Map<string, string[]>): string {
 	throw new Error("missing --topic or --topic-file");
 }
 
+/**
+ * Parse --tools name=tool1,tool2 per-agent overrides.
+ * Also handles global --no-tools (applies to all agents without per-agent override).
+ */
+function applyToolFlags(agents: AgentSpec[], flags: Map<string, string[]>): AgentSpec[] {
+	const globalNoTools = flags.has("no-tools");
+	const perAgent = new Map<string, string[] | false>();
+
+	for (const raw of flags.get("tools") ?? []) {
+		const eq = raw.indexOf("=");
+		if (eq === -1) {
+			// Bare --tools read,bash → applies to all agents
+			const tools = raw.split(",").filter(Boolean);
+			for (const a of agents) perAgent.set(a.name, tools);
+		} else {
+			// --tools claude=read,grep → per-agent
+			const name = raw.slice(0, eq);
+			const tools = raw.slice(eq + 1).split(",").filter(Boolean);
+			perAgent.set(name, tools.length > 0 ? tools : false);
+		}
+	}
+
+	return agents.map((a) => {
+		if (perAgent.has(a.name)) return { ...a, tools: perAgent.get(a.name)! };
+		if (globalNoTools) return { ...a, tools: false as const };
+		return a;
+	});
+}
+
 function buildConfig(flags: Map<string, string[]>): OrchestraConfig {
 	const name = flags.get("name")?.[0];
 	if (!name) throw new Error("missing --name");
 	const agentSpecs = flags.get("agent") ?? [];
 	if (agentSpecs.length < 2) throw new Error("need at least two --agent specs");
-	const parsed = agentSpecs.map(parseAgentSpec);
-	const agents = applyPlanFlags(parsed, flags.get("plan"));
+	let agents = agentSpecs.map(parseAgentSpec);
+	agents = applyPlanFlags(agents, flags.get("plan"));
+	agents = applyToolFlags(agents, flags);
 	const topic = resolveTopic(flags);
 	const maxTurns = Number(flags.get("max-turns")?.[0] ?? "20");
 	const turnDelayMs = Number(flags.get("turn-delay-ms")?.[0] ?? "0");
 	const sessionsDir = flags.get("sessions-dir")?.[0] ?? DEFAULT_SESSIONS_DIR;
 	const mode = (flags.get("mode")?.[0] ?? "round-robin") as OrchestraConfig["mode"];
-	return { name, agents, topic, maxTurns, turnDelayMs, sessionsDir, mode };
+
+	// Briefing phase
+	const briefingPhase = flags.has("briefing");
+	const briefingPromptFile = flags.get("briefing-file")?.[0];
+	const briefingPrompt = briefingPromptFile
+		? readFileSync(briefingPromptFile, "utf8")
+		: flags.get("briefing-prompt")?.[0];
+	const briefingTimeoutMs = Number(flags.get("briefing-timeout")?.[0] ?? "0") || undefined;
+
+	return {
+		name, agents, topic, maxTurns, turnDelayMs, sessionsDir, mode,
+		...(briefingPhase && { briefingPhase }),
+		...(briefingPrompt && { briefingPrompt }),
+		...(briefingTimeoutMs && { briefingTimeoutMs }),
+	};
 }
 
 async function cmdRun(flags: Map<string, string[]>): Promise<void> {
@@ -227,7 +303,7 @@ async function cmdStart(flags: Map<string, string[]>): Promise<void> {
 	const logPath = join(sessionDir, "events.log");
 
 	// Ensure log file exists so tail -f doesn't fail
-	writeFileSync(logPath, `# pi-team session ${config.name} — started ${new Date().toISOString()}\n`);
+	writeFileSync(logPath, `# pi-team session ${config.name} - started ${new Date().toISOString()}\n`);
 
 	createLayout({
 		sessionName: `piteam-${config.name}`,
@@ -257,7 +333,7 @@ async function cmdInject(flags: Map<string, string[]>): Promise<void> {
 		await new Promise((r) => setTimeout(r, 300));
 	}
 	if (!existsSync(socketPath)) {
-		throw new Error(`no injection socket at ${socketPath} — is the session running?`);
+		throw new Error(`no injection socket at ${socketPath} - is the session running?`);
 	}
 	process.stdout.write(
 		`\x1b[2m[connected to ${name}. Type a message and press Enter. Ctrl+D to quit.]\x1b[0m\n`,
@@ -297,7 +373,7 @@ async function cmdRunWithConfigFile(flags: Map<string, string[]>): Promise<void>
 		return cmdRun(flags);
 	}
 	const config = JSON.parse(readFileSync(cf, "utf8")) as OrchestraConfig;
-	// Use the loaded config directly — it already contains AgentSpec objects
+	// Use the loaded config directly - it already contains AgentSpec objects
 	// with planId preserved. Don't round-trip through string-based flags.
 	await runFromConfig(config, flags);
 }
